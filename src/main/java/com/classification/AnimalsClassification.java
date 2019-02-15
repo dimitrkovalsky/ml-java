@@ -211,6 +211,11 @@ public class AnimalsClassification {
         return new ConvolutionLayer.Builder(new int[]{3,3}, new int[] {1,1}, new int[] {1,1}).name(name).nOut(out).biasInit(bias).build();
     }
 
+    public static ConvolutionLayer conv3x3(String name, int out, double bias, Activation activation) {
+        return new ConvolutionLayer.Builder(new int[]{3,3}, new int[] {1,1}, new int[] {1,1}).name(name).nOut(out).biasInit(bias).activation(activation).build();
+    }
+
+
 
     public static ConvolutionLayer conv5x5(String name, int out, int[] stride, int[] pad, double bias) {
         return new ConvolutionLayer.Builder(new int[]{5,5}, stride, pad).name(name).nOut(out).biasInit(bias).build();

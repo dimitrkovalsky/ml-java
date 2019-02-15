@@ -64,7 +64,7 @@ public class SmileClassifier {
     private int numLabels;
 
     public void recognizeSmile(String imagePath) throws IOException {
-        File modelFile = new File(MODEL_FILENAME);
+        File modelFile = new File("smile80.data");
         if (!modelFile.exists()) {
             log.info("Models does not exists");
             return;
@@ -72,9 +72,25 @@ public class SmileClassifier {
         MultiLayerNetwork multiLayerNetwork = ModelSerializer.restoreMultiLayerNetwork(modelFile);
         INDArray matrix = new NativeImageLoader(height, width, 3).asMatrix(new File(imagePath));
         normalizeImage(matrix);
-        System.out.println(multiLayerNetwork.getLabels());
         System.out.println(multiLayerNetwork.output(matrix));
         System.out.println(Arrays.toString(multiLayerNetwork.predict(matrix)));
+    }
+
+
+    public boolean isSmile(String imagePath) throws IOException {
+        File modelFile = new File("smile.data");
+        if (!modelFile.exists()) {
+            log.info("Models does not exists");
+            return false;
+        }
+        MultiLayerNetwork multiLayerNetwork = ModelSerializer.restoreMultiLayerNetwork(modelFile, false);
+        INDArray matrix = new NativeImageLoader(height, width, 3).asMatrix(new File(imagePath));
+        normalizeImage(matrix);
+        multiLayerNetwork.output(matrix);
+        multiLayerNetwork.output(matrix);
+        System.out.println(multiLayerNetwork.output(matrix));
+        System.out.println(multiLayerNetwork.output(matrix));
+        return multiLayerNetwork.predict(matrix)[0] == 1 && multiLayerNetwork.output(matrix).getDouble(1) > 0.51 ;
     }
 
     private void normalizeImage(final INDArray image) {
@@ -154,6 +170,7 @@ public class SmileClassifier {
 
     private void evaluateModel(InputSplit testData, MultiLayerNetwork network, ImageRecordReader recordReader) throws IOException {
         DataSetIterator dataIter;
+        recordReader.reset();
         ImagePreProcessingScaler preProcessor = new ImagePreProcessingScaler(0, 1);
         log.info("Evaluate model....");
         recordReader.initialize(testData);
@@ -218,7 +235,7 @@ public class SmileClassifier {
                 .layer(3, conv3x3("cnn3", 64, 1))
                 .layer(4, maxPool("maxpool2", new int[] {3, 3}))
                 .layer(5, new DenseLayer.Builder().activation(Activation.RELU)
-                        .nOut(512).dropOut(0.6).build())
+                        .nOut(512).dropOut(0.9).build())
                 .layer(6, new OutputLayer.Builder(LossFunctions.LossFunction.RECONSTRUCTION_CROSSENTROPY)
                         .nOut(numLabels)
                         .activation(Activation.SOFTMAX)
