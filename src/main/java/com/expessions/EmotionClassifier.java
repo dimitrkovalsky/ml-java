@@ -4,25 +4,23 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.datavec.api.io.filters.BalancedPathFilter;
 import org.datavec.api.io.labels.ParentPathLabelGenerator;
-import org.datavec.api.records.reader.RecordReader;
 import org.datavec.api.records.reader.impl.csv.CSVRecordReader;
 import org.datavec.api.split.FileSplit;
 import org.datavec.api.split.InputSplit;
-import org.datavec.api.writable.IntWritable;
 import org.datavec.api.writable.Writable;
 import org.datavec.image.loader.NativeImageLoader;
 import org.datavec.image.recordreader.ImageRecordReader;
-import org.datavec.image.transform.*;
 import org.deeplearning4j.api.storage.StatsStorage;
 import org.deeplearning4j.datasets.datavec.RecordReaderDataSetIterator;
 import org.deeplearning4j.datasets.iterator.MultipleEpochsIterator;
 import org.deeplearning4j.nn.api.OptimizationAlgorithm;
 import org.deeplearning4j.nn.conf.*;
-import org.deeplearning4j.nn.conf.distribution.GaussianDistribution;
-import org.deeplearning4j.nn.conf.distribution.NormalDistribution;
 import org.deeplearning4j.nn.conf.inputs.InputType;
 import org.deeplearning4j.nn.conf.layers.*;
 import org.deeplearning4j.nn.graph.ComputationGraph;
+import org.deeplearning4j.nn.modelimport.keras.KerasModelImport;
+import org.deeplearning4j.nn.modelimport.keras.exceptions.InvalidKerasConfigurationException;
+import org.deeplearning4j.nn.modelimport.keras.exceptions.UnsupportedKerasConfigurationException;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
 import org.deeplearning4j.nn.weights.WeightInit;
 import org.deeplearning4j.optimize.listeners.ScoreIterationListener;
@@ -30,14 +28,14 @@ import org.deeplearning4j.ui.api.UIServer;
 import org.deeplearning4j.ui.stats.StatsListener;
 import org.deeplearning4j.ui.storage.InMemoryStatsStorage;
 import org.deeplearning4j.util.ModelSerializer;
-import org.deeplearning4j.zoo.model.AlexNet;
 import org.jetbrains.annotations.NotNull;
 import org.nd4j.evaluation.classification.Evaluation;
 import org.nd4j.linalg.activations.Activation;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.dataset.DataSet;
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator;
-import org.nd4j.linalg.dataset.api.preprocessor.ImageFlatteningDataSetPreProcessor;
+import org.nd4j.linalg.dataset.api.preprocessor.DataNormalization;
 import org.nd4j.linalg.dataset.api.preprocessor.ImagePreProcessingScaler;
-import org.nd4j.linalg.io.ClassPathResource;
 import org.nd4j.linalg.learning.config.Adam;
 import org.nd4j.linalg.learning.config.IUpdater;
 import org.nd4j.linalg.learning.config.Nesterovs;
@@ -47,85 +45,137 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
-import static com.classification.AnimalsClassification.*;
-
 @Slf4j
 public class EmotionClassifier {
     public static final String MODEL_PATH = "emotion-rnn.data";
-    protected static int height = 32;
-    protected static int width = 32;
+    protected static int height = 64;
+    protected static int width = 64;
     protected static int channels = 3;
-    protected static int batchSize = 32;
+    protected static int batchSize = 50;
     protected static long seed = 42;
     protected static Random rng = new Random(seed);
-    protected static int epochs = 10; //epochs * 21 iterations per 1 transformation
+    protected static int epochs = 25; //epochs * 21 iterations per 1 transformation
     protected static int cycles = 2000;
-    private static int numLabels = 8;
-    protected static double splitTrainTest = 0.7;
+    private static int numLabels = 5;
+    protected static double splitTrainTest = 0.8;
 
-    public static void main(String[] args) throws IOException, InterruptedException {
-        ComputationGraph network = initAlex(MODEL_PATH);
+    public static void main(String[] args) throws Exception, InterruptedException {
+        ComputationGraph network = initConvModel(MODEL_PATH);
         System.out.println(network.summary());
         ParentPathLabelGenerator labelMaker = new ParentPathLabelGenerator();
         File mainPath = new File("C:\\gitlab\\facial_expressions\\processed");
         FileSplit fileSplit = new FileSplit(mainPath, NativeImageLoader.ALLOWED_FORMATS, rng);
         int numExamples = Math.toIntExact(fileSplit.length());
-        numLabels = fileSplit.getRootDir().listFiles(File::isDirectory).length;
-        BalancedPathFilter pathFilter = new BalancedPathFilter(new Random(42), labelMaker, numExamples, numLabels, batchSize/2);
 
-        InputSplit[] inputSplit = fileSplit.sample(pathFilter, splitTrainTest, 1 - splitTrainTest);
+        System.out.println("Num examples : " + numExamples);
+        numLabels = fileSplit.getRootDir().listFiles(File::isDirectory).length;
+        BalancedPathFilter pathFilter = new BalancedPathFilter(new Random(42), labelMaker, numExamples, numLabels, batchSize);
+
+//        InputSplit[] inputSplit = fileSplit.sample(pathFilter, 10000, 3000);
+        InputSplit[] inputSplit = fileSplit.sample(pathFilter, numExamples * splitTrainTest, numExamples * (1 - splitTrainTest));
         InputSplit trainData = inputSplit[0];
         InputSplit testData = inputSplit[1];
 
-        trainModel(network, trainData, labelMaker);
-        evaluateModel(network, testData, labelMaker);
+
+        // System.out.println("Test data: " + trainData.length());
+        trainModel(network, trainData, testData, labelMaker);
+        //   evaluateModel(network, trainData, testData, labelMaker);
+        ModelSerializer.writeModel(network, MODEL_PATH, true);
+    }
+
+    public String classify(String imagePath) throws IOException {
+        File modelFile = new File(MODEL_PATH);
+        if (!modelFile.exists()) {
+            log.info("Models does not exists");
+            return imagePath;
+        }
+        String[] labels = {"anger", "happiness", "neutral", "sadness", "surprise"};
+        ComputationGraph multiLayerNetwork = ModelSerializer.restoreComputationGraph(modelFile, false);
+        INDArray matrix = new NativeImageLoader(height, width, 3).asMatrix(new File(imagePath));
+        normalizeImage(matrix);
+        System.out.println(Arrays.toString(multiLayerNetwork.rnnTimeStep(matrix)));
+        INDArray[] output = multiLayerNetwork.output(matrix);
+        int indexOfLargest = getIndexOfLargest(output[0].toDoubleVector());
+        //System.out.println(Arrays.toString(output));
+        return labels[indexOfLargest];
+    }
+
+    public int getIndexOfLargest(double[] array) {
+        if (array == null || array.length == 0) return -1; // null or empty
+
+        int largest = 0;
+        for (int i = 1; i < array.length; i++) {
+            if (array[i] > array[largest]) largest = i;
+        }
+        return largest; // position of the first largest found
+    }
+
+    private void normalizeImage(final INDArray image) {
+        ImagePreProcessingScaler preProcessor = new ImagePreProcessingScaler(0, 1);
+        preProcessor.transform(image);
+    }
+
+    private static ComputationGraph initKeras(String modelPath) throws IOException, UnsupportedKerasConfigurationException, InvalidKerasConfigurationException {
+        MultiLayerNetwork model = KerasModelImport.importKerasSequentialModelAndWeights("C:\\gitlab\\ml\\ml-java\\model_5-49-0.62.hdf5");
+        System.out.println(model.summary());
+        return null;
     }
 
     @NotNull
-    private static void trainModel(ComputationGraph network, InputSplit trainData, ParentPathLabelGenerator labelMaker) throws IOException {
+    private static void trainModel(ComputationGraph network, InputSplit trainData, InputSplit testData, ParentPathLabelGenerator labelMaker) throws IOException {
         log.info("Train model....");
-        ImageTransform flipTransform1 = new FlipImageTransform(new Random());
-        ImageTransform flipTransform2 = new FlipImageTransform(new Random(123));
-        ImageTransform resizeTransform2 = new RotateImageTransform(30);
-        ImageTransform resizeTransform3 = new ColorConversionTransform(1);
 
         ImageRecordReader recordReader = new ImageRecordReader(height, width, channels, labelMaker);
-//        recordReader.initialize(trainData, new MultiImageTransform(new Random(42), flipTransform1, resizeTransform2, new ResizeImageTransform(width, height)));
-        recordReader.initialize(trainData, null);
-        MultipleEpochsIterator trainDataIter;
-        DataSetIterator dataIter = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
-        ImagePreProcessingScaler preProcessor = new ImagePreProcessingScaler(0, 1);
-        preProcessor.fit(dataIter);
-        dataIter.setPreProcessor(preProcessor);
-        trainDataIter = new MultipleEpochsIterator(epochs, dataIter);
-        network.fit(trainDataIter, epochs);
+        DataSetIterator dataIter;
+        MultipleEpochsIterator trainIter;
 
-//        List<ImageTransform> transforms = Arrays.asList(new ImageTransform[] {flipTransform1, flipTransform2, resizeTransform2, resizeTransform3});
-//        for (ImageTransform transform : transforms) {
-//            System.out.print("\nTraining on transformation: " + transform.getClass().toString() + "\n\n");
-//            recordReader.reset();
-//            recordReader.initialize(trainData, transform);
-//            dataIter = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
-//            preProcessor.fit(dataIter);
-//            dataIter.setPreProcessor(preProcessor);
-//            trainDataIter = new MultipleEpochsIterator(epochs, dataIter);
-//            network.fit(trainDataIter);
-//          //  ModelSerializer.writeModel(network, MODEL_PATH, true);
-//        }
-//        }
+
+        log.info("Train model....");
+        recordReader.initialize(trainData, null);
+        dataIter = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
+        DataNormalization scaler = new ImagePreProcessingScaler(0, 1);
+        scaler.fit(dataIter);
+        dataIter.setPreProcessor(scaler);
+        trainIter = new MultipleEpochsIterator(epochs, dataIter, 4);
+        network.fit(trainIter, epochs);
+
+        log.info("Evaluate model test data....");
+        recordReader.initialize(testData);
+        dataIter = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
+        scaler.fit(dataIter);
+        dataIter.setPreProcessor(scaler);
+        Evaluation eval = network.evaluate(dataIter);
+        log.info(eval.stats(false));
+
+        log.info("Evaluate model train data....");
+        recordReader.initialize(trainData);
+        dataIter = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
+        scaler.fit(dataIter);
+        dataIter.setPreProcessor(scaler);
+        eval = network.evaluate(dataIter);
+        log.info(eval.stats(false));
     }
 
-    private static void evaluateModel(ComputationGraph network, InputSplit testData, ParentPathLabelGenerator labelMaker) throws IOException {
+    private static void evaluateModel(ComputationGraph network, InputSplit trainData, InputSplit testData, ParentPathLabelGenerator labelMaker) throws IOException {
         log.info("Evaluate model....");
-        ImageRecordReader recordReader = new ImageRecordReader(height, width, channels, labelMaker, null);
+        trainData.reset();
+        ImageRecordReader recordReader = new ImageRecordReader(height, width, channels, labelMaker);
+        DataSetIterator iterator = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
+        DataSet trainDataSet = iterator.next();
 
-        File testDirectory = new File("C:\\gitlab\\facial_expressions\\processed");
-        FileSplit testSplit = new FileSplit(testDirectory, new String[] {"jpg"});
-        recordReader.initialize(testSplit, null);
         RecordReaderDataSetIterator testDataIter = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
-//        testDataIter.setPreProcessor(new ImageFlatteningDataSetPreProcessor());
         testDataIter.setPreProcessor(new ImagePreProcessingScaler(0, 1));
         Evaluation eval = network.evaluate(testDataIter);
+
+        log.info("Training data...");
+        log.info(eval.stats(false));
+
+        recordReader.reset();
+        testDataIter = new RecordReaderDataSetIterator(recordReader, batchSize, 1, numLabels);
+        recordReader.initialize(testData, null);
+        testDataIter.setPreProcessor(new ImagePreProcessingScaler(0, 1));
+        eval = network.evaluate(testDataIter);
+        log.info("Test data...");
         log.info(eval.stats(false));
     }
 
@@ -134,12 +184,12 @@ public class EmotionClassifier {
         UIServer uiServer = UIServer.getInstance();
         StatsStorage statsStorage = new InMemoryStatsStorage();
         uiServer.attach(statsStorage);
-        if (modelFile.exists()) {
-            log.info("Restoring model....");
-            ComputationGraph multiLayerNetwork = ModelSerializer.restoreComputationGraph(modelFile);
-            multiLayerNetwork.setListeners(new StatsListener(statsStorage), new ScoreIterationListener(10));
-            return multiLayerNetwork;
-        }
+//        if (modelFile.exists()) {
+//            log.info("Restoring model....");
+//            ComputationGraph multiLayerNetwork = ModelSerializer.restoreComputationGraph(modelFile);
+//            multiLayerNetwork.setListeners(new StatsListener(statsStorage), new ScoreIterationListener(10));
+//            return multiLayerNetwork;
+//        }
 
         int[] inputShape = new int[] {3, 32, 32};
         IUpdater updater = new Nesterovs();
@@ -226,38 +276,38 @@ public class EmotionClassifier {
         UIServer uiServer = UIServer.getInstance();
         StatsStorage statsStorage = new InMemoryStatsStorage();
         uiServer.attach(statsStorage);
-//        if (modelFile.exists()) {
-//            MultiLayerNetwork multiLayerNetwork = ModelSerializer.restoreMultiLayerNetwork(modelFile);
-//            multiLayerNetwork.setListeners(new StatsListener(statsStorage), new ScoreIterationListener(10));
-//            return multiLayerNetwork;
-//        }
+        if (modelFile.exists()) {
+            ComputationGraph multiLayerNetwork = ModelSerializer.restoreComputationGraph(modelFile);
+            multiLayerNetwork.setListeners(new StatsListener(statsStorage), new ScoreIterationListener(10));
+            return multiLayerNetwork;
+        }
 
         ComputationGraphConfiguration config = new NeuralNetConfiguration.Builder()
                 .seed(seed)
                 .gradientNormalization(GradientNormalization.RenormalizeL2PerLayer)
                 .l2(1e-3)
                 .updater(new Adam(1e-3))
-                .weightInit( WeightInit.XAVIER_UNIFORM)
+                .weightInit(WeightInit.XAVIER_UNIFORM)
                 .graphBuilder()
                 .addInputs("trainFeatures")
                 .setInputTypes(InputType.convolutional(height, width, channels))
                 .setOutputs("out1")
-                .addLayer("cnn1",  new ConvolutionLayer.Builder(new int[]{5, 5}, new int[]{1, 1}, new int[]{0, 0})
-                        .nIn(channels).nOut(48).activation( Activation.RELU).build(), "trainFeatures")
-                .addLayer("maxpool1",  new SubsamplingLayer.Builder(PoolingType.MAX, new int[]{2,2}, new int[]{2, 2}, new int[]{0, 0})
+                .addLayer("cnn1", new ConvolutionLayer.Builder(new int[] {5, 5}, new int[] {1, 1}, new int[] {0, 0})
+                        .nIn(channels).nOut(48).activation(Activation.RELU).convolutionMode(ConvolutionMode.Truncate).build(), "trainFeatures")
+                .addLayer("maxpool1", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 2}, new int[] {2, 2}, new int[] {0, 0})
                         .build(), "cnn1")
-                .addLayer("cnn2",  new ConvolutionLayer.Builder(new int[]{5, 5}, new int[]{1, 1}, new int[]{0, 0})
-                        .nOut(64).activation( Activation.RELU).build(), "maxpool1")
-                .addLayer("maxpool2",  new SubsamplingLayer.Builder(PoolingType.MAX, new int[]{2,1}, new int[]{2, 1}, new int[]{0, 0})
+                .addLayer("cnn2", new ConvolutionLayer.Builder(new int[] {5, 5}, new int[] {1, 1}, new int[] {0, 0})
+                        .nOut(64).activation(Activation.RELU).convolutionMode(ConvolutionMode.Truncate).build(), "maxpool1")
+                .addLayer("maxpool2", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 1}, new int[] {2, 1}, new int[] {0, 0})
                         .build(), "cnn2")
-                .addLayer("cnn3",  new ConvolutionLayer.Builder(new int[]{3, 3}, new int[]{1, 1}, new int[]{0, 0})
-                        .nOut(128).activation( Activation.RELU).build(), "maxpool2")
-                .addLayer("maxpool3",  new SubsamplingLayer.Builder(PoolingType.MAX, new int[]{2,2}, new int[]{2, 2}, new int[]{0, 0})
+                .addLayer("cnn3", new ConvolutionLayer.Builder(new int[] {3, 3}, new int[] {1, 1}, new int[] {0, 0})
+                        .nOut(128).activation(Activation.RELU).convolutionMode(ConvolutionMode.Truncate).build(), "maxpool2")
+                .addLayer("maxpool3", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 2}, new int[] {2, 2}, new int[] {0, 0})
                         .build(), "cnn3")
-                .addLayer("ffn0",  new DenseLayer.Builder().nOut(3072)
+                .addLayer("ffn0", new DenseLayer.Builder().nOut(512)
                         .build(), "maxpool3")
-                .addLayer("ffn1",  new DenseLayer.Builder().nOut(3072)
-                        .build(), "ffn0")
+                .addLayer("ffn1", new DenseLayer.Builder().nOut(512)
+                        .dropOut(0.5).build(), "ffn0")
                 .addLayer("out1", new OutputLayer.Builder(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
                         .nOut(numLabels).activation(Activation.SOFTMAX).build(), "ffn1")
                 .build();
