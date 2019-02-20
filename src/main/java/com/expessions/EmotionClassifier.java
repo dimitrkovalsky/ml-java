@@ -62,8 +62,8 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class EmotionClassifier {
     public static final String MODEL_PATH = "emotion-rnn.data";
-    protected static int height = 64;
-    protected static int width = 64;
+    protected static int height = 48;
+    protected static int width = 48;
     protected static int channels = 3;
     protected static int batchSize = 50;
     protected static long seed = 42;
@@ -374,20 +374,21 @@ public class EmotionClassifier {
                 .setOutputs("out1")
                 .addLayer("cnn1", new ConvolutionLayer.Builder(new int[] {5, 5}, new int[] {1, 1}, new int[] {1, 1})
                         .nIn(channels).nOut(64).activation(Activation.RELU).build(), "trainFeatures")
-                .addLayer("maxpool1", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 2}, new int[] {2, 2}, new int[] {0, 0})
-                        .build(), "cnn1")
+                .addLayer("LRN1",  new LocalResponseNormalization.Builder().name("LRN1").build(), "cnn1")
+                .addLayer("maxpool1", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {3, 3}, new int[] {2, 2}, new int[] {0, 0})
+                        .build(), "LRN1")
                 .addLayer("cnn2", new ConvolutionLayer.Builder(new int[] {5, 5}, new int[] {2, 2}, new int[] {0, 0})
                         .nOut(64).activation(Activation.RELU).build(), "maxpool1")
                 .addLayer("maxpool2", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {3, 3}, new int[] {2, 2}, new int[] {0, 0})
                         .build(), "cnn2")
                 .addLayer("cnn3", new ConvolutionLayer.Builder(new int[] {4, 4}, new int[] {1, 1}, new int[] {0, 0})
                         .nOut(128).activation(Activation.RELU).build(), "maxpool2")
-                .addLayer("maxpool3", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 2}, new int[] {2, 2}, new int[] {0, 0})
-                        .build(), "cnn3")
-                .addLayer("ffn0", new DenseLayer.Builder().nOut(2048)
-                        .dropOut(0.5).build(), "maxpool3")
-                .addLayer("ffn1", new DenseLayer.Builder().nOut(2048)
-                        .dropOut(0.5).build(), "ffn0")
+//                .addLayer("maxpool3", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 2}, new int[] {2, 2}, new int[] {0, 0})
+//                        .build(), "cnn3")
+                .addLayer("ffn1", new DenseLayer.Builder().nOut(3072)
+                        .dropOut(0.5).build(), "cnn3")
+//                .addLayer("ffn1", new DenseLayer.Builder().nOut(2048)
+//                        .dropOut(0.5).build(), "ffn0")
                 .addLayer("out1", new OutputLayer.Builder(LossFunctions.LossFunction.RECONSTRUCTION_CROSSENTROPY)
                         .nOut(numLabels).activation(Activation.SOFTMAX).build(), "ffn1")
                 .build();
