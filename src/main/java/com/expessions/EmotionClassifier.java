@@ -35,6 +35,9 @@ import org.deeplearning4j.nn.modelimport.keras.exceptions.InvalidKerasConfigurat
 import org.deeplearning4j.nn.modelimport.keras.exceptions.UnsupportedKerasConfigurationException;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
 import org.deeplearning4j.nn.weights.WeightInit;
+import org.deeplearning4j.optimize.api.InvocationType;
+import org.deeplearning4j.optimize.api.TrainingListener;
+import org.deeplearning4j.optimize.listeners.EvaluativeListener;
 import org.deeplearning4j.optimize.listeners.ScoreIterationListener;
 import org.deeplearning4j.ui.api.UIServer;
 import org.deeplearning4j.ui.stats.StatsListener;
@@ -48,6 +51,7 @@ import org.nd4j.linalg.dataset.DataSet;
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator;
 import org.nd4j.linalg.dataset.api.preprocessor.DataNormalization;
 import org.nd4j.linalg.dataset.api.preprocessor.ImagePreProcessingScaler;
+import org.nd4j.linalg.dataset.api.preprocessor.VGG16ImagePreProcessor;
 import org.nd4j.linalg.learning.config.AdaDelta;
 import org.nd4j.linalg.learning.config.Adam;
 import org.nd4j.linalg.learning.config.IUpdater;
@@ -177,7 +181,7 @@ public class EmotionClassifier {
         ImageRecordReader testRecordReader = new ImageRecordReader(height, width, channels, labelMaker);
         testRecordReader.initialize(testData);
         DataSetIterator testDataIter = new RecordReaderDataSetIterator(testRecordReader, batchSize, 1, numLabels);
-        DataNormalization testScaler = new ImagePreProcessingScaler(0, 1);
+        DataNormalization testScaler = new VGG16ImagePreProcessor();//new ImagePreProcessingScaler(0, 1);
         testScaler.fit(testDataIter);
         testDataIter.setPreProcessor(testScaler);
 
@@ -189,10 +193,16 @@ public class EmotionClassifier {
                 .modelSaver(new LocalFileGraphSaver("models"))
                 .build();
 
+        ImageRecordReader evalReader = new ImageRecordReader(height, width, channels, labelMaker);
+        evalReader.initialize(testData, null);
+        testDataIter = new RecordReaderDataSetIterator(evalReader, batchSize, 1, numLabels);
+        DataNormalization evalNormalizer = new VGG16ImagePreProcessor();
+        evalNormalizer.fit(testDataIter);
 
+        network.addListeners(new EvaluativeListener(testDataIter, 1, InvocationType.EPOCH_END));
 
 //Conduct early stopping training:
-        DataNormalization trainScaler = new ImagePreProcessingScaler(0, 1);
+        DataNormalization trainScaler = new VGG16ImagePreProcessor();//new ImagePreProcessingScaler(0, 1);
 
 
         log.info("Train model....");
@@ -203,7 +213,7 @@ public class EmotionClassifier {
         trainDataIterator.setPreProcessor(trainScaler);
         MultipleEpochsIterator trainIter = new MultipleEpochsIterator(epochs, trainDataIterator, 4);
         EarlyStoppingGraphTrainer trainer = new EarlyStoppingGraphTrainer(esConf,network,trainIter);
-        trainer.setListener(new LoggingEarlyStoppingListener());
+//        trainer.setListener(new LoggingEarlyStoppingListener());
         EarlyStoppingResult<ComputationGraph> result = trainer.fit();
 //        network.fit(trainIter, epochs);
 
@@ -214,7 +224,7 @@ public class EmotionClassifier {
         System.out.println("Score at best epoch: " + result.getBestModelScore());
 
 //Get the best model:
-        DataNormalization scaler = new ImagePreProcessingScaler(0, 1);
+        DataNormalization scaler = new VGG16ImagePreProcessor();//new ImagePreProcessingScaler(0, 1);
         ComputationGraph bestModel = result.getBestModel();
         System.out.println(bestModel);
 //
@@ -259,97 +269,6 @@ public class EmotionClassifier {
         log.info(eval.stats(false));
     }
 
-    private static ComputationGraph initAlex(String modelPath) throws IOException {
-        File modelFile = new File(modelPath);
-        UIServer uiServer = UIServer.getInstance();
-        StatsStorage statsStorage = new InMemoryStatsStorage();
-        uiServer.attach(statsStorage);
-//        if (modelFile.exists()) {
-//            log.info("Restoring model....");
-//            ComputationGraph multiLayerNetwork = ModelSerializer.restoreComputationGraph(modelFile);
-//            multiLayerNetwork.setListeners(new StatsListener(statsStorage), new ScoreIterationListener(10));
-//            return multiLayerNetwork;
-//        }
-
-        int[] inputShape = new int[] {3, 32, 32};
-        IUpdater updater = new Nesterovs();
-        CacheMode cacheMode = CacheMode.NONE;
-        WorkspaceMode workspaceMode = WorkspaceMode.ENABLED;
-        ConvolutionLayer.AlgoMode cudnnAlgoMode = ConvolutionLayer.AlgoMode.PREFER_FASTEST;
-        ComputationGraphConfiguration conf =
-                new NeuralNetConfiguration.Builder().seed(seed)
-                        .optimizationAlgo(OptimizationAlgorithm.STOCHASTIC_GRADIENT_DESCENT)
-                        .updater(updater)
-                        .activation(Activation.RELU)
-                        .cacheMode(cacheMode)
-                        .trainingWorkspaceMode(workspaceMode)
-                        .inferenceWorkspaceMode(workspaceMode)
-                        .graphBuilder()
-                        .addInputs("in")
-                        // block 1
-                        .layer(0, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nIn(inputShape[0]).nOut(64)
-                                .cudnnAlgoMode(cudnnAlgoMode).build(), "in")
-                        .layer(1, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(64).cudnnAlgoMode(cudnnAlgoMode).build(), "0")
-                        .layer(2, new SubsamplingLayer.Builder()
-                                .poolingType(SubsamplingLayer.PoolingType.MAX).kernelSize(2, 2)
-                                .stride(2, 2).build(), "1")
-                        // block 2
-                        .layer(3, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(128).cudnnAlgoMode(cudnnAlgoMode).build(), "2")
-                        .layer(4, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(128).cudnnAlgoMode(cudnnAlgoMode).build(), "3")
-                        .layer(5, new SubsamplingLayer.Builder()
-                                .poolingType(SubsamplingLayer.PoolingType.MAX).kernelSize(2, 2)
-                                .stride(2, 2).build(), "4")
-                        // block 3
-                        .layer(6, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(256).cudnnAlgoMode(cudnnAlgoMode).build(), "5")
-                        .layer(7, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(256).cudnnAlgoMode(cudnnAlgoMode).build(), "6")
-                        .layer(8, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(256).cudnnAlgoMode(cudnnAlgoMode).build(), "7")
-                        .layer(9, new SubsamplingLayer.Builder()
-                                .poolingType(SubsamplingLayer.PoolingType.MAX).kernelSize(2, 2)
-                                .stride(2, 2).build(), "8")
-                        // block 4
-                        .layer(10, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(512).cudnnAlgoMode(cudnnAlgoMode).build(), "9")
-                        .layer(11, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(512).cudnnAlgoMode(cudnnAlgoMode).build(), "10")
-                        .layer(12, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(512).cudnnAlgoMode(cudnnAlgoMode).build(), "11")
-                        .layer(13, new SubsamplingLayer.Builder()
-                                .poolingType(SubsamplingLayer.PoolingType.MAX).kernelSize(2, 2)
-                                .stride(2, 2).build(), "12")
-                        // block 5
-                        .layer(14, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(512).cudnnAlgoMode(cudnnAlgoMode).build(), "13")
-                        .layer(15, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(512).cudnnAlgoMode(cudnnAlgoMode).build(), "14")
-                        .layer(16, new ConvolutionLayer.Builder().kernelSize(3, 3).stride(1, 1)
-                                .padding(1, 1).nOut(512).cudnnAlgoMode(cudnnAlgoMode).build(), "15")
-                        .layer(17, new SubsamplingLayer.Builder()
-                                .poolingType(SubsamplingLayer.PoolingType.MAX).kernelSize(2, 2)
-                                .stride(2, 2).build(), "16")
-                        .layer(18, new DenseLayer.Builder().nOut(4096).dropOut(0.5)
-                                .build(), "17")
-                        .layer(19, new DenseLayer.Builder().nOut(4096).dropOut(0.5)
-                                .build(), "18")
-                        .layer(20, new OutputLayer.Builder(
-                                LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD).name("output")
-                                .nOut(numLabels).activation(Activation.SOFTMAX) // radial basis function required
-                                .build(), "19")
-                        .setOutputs("20")
-                        .backprop(true).pretrain(false)
-                        .setInputTypes(InputType.convolutional(height, width, channels))
-                        .build();
-
-        ComputationGraph network = new ComputationGraph(conf);
-        network.setListeners(new StatsListener(statsStorage), new ScoreIterationListener(10));
-        return network;
-    }
 
     private static ComputationGraph initConvModel(String modelPath) throws IOException {
         File modelFile = new File(modelPath);
@@ -365,30 +284,29 @@ public class EmotionClassifier {
         ComputationGraphConfiguration config = new NeuralNetConfiguration.Builder()
                 .seed(seed)
                 .gradientNormalization(GradientNormalization.RenormalizeL2PerLayer)
-                .l2(0.0001)
+                .l2(0.005)
                 .updater(new Adam(0.0001))
                 .weightInit(WeightInit.XAVIER_UNIFORM)
                 .graphBuilder()
                 .addInputs("trainFeatures")
                 .setInputTypes(InputType.convolutional(height, width, channels))
                 .setOutputs("out1")
-                .addLayer("cnn1", new ConvolutionLayer.Builder(new int[] {5, 5}, new int[] {1, 1}, new int[] {1, 1})
+                .addLayer("cnn1", new ConvolutionLayer.Builder(new int[] {3, 3}, new int[] {1, 1}, new int[] {1, 1})
                         .nIn(channels).nOut(64).activation(Activation.RELU).build(), "trainFeatures")
-                .addLayer("LRN1",  new LocalResponseNormalization.Builder().name("LRN1").build(), "cnn1")
                 .addLayer("maxpool1", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {3, 3}, new int[] {2, 2}, new int[] {0, 0})
-                        .build(), "LRN1")
-                .addLayer("cnn2", new ConvolutionLayer.Builder(new int[] {5, 5}, new int[] {2, 2}, new int[] {0, 0})
-                        .nOut(64).activation(Activation.RELU).build(), "maxpool1")
+                        .build(), "cnn1")
+                .addLayer("cnn2", new ConvolutionLayer.Builder(new int[] {3, 3}, new int[] {2, 2}, new int[] {0, 0})
+                        .nOut(128).activation(Activation.RELU).build(), "maxpool1")
                 .addLayer("maxpool2", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {3, 3}, new int[] {2, 2}, new int[] {0, 0})
                         .build(), "cnn2")
                 .addLayer("cnn3", new ConvolutionLayer.Builder(new int[] {4, 4}, new int[] {1, 1}, new int[] {0, 0})
-                        .nOut(128).activation(Activation.RELU).build(), "maxpool2")
-//                .addLayer("maxpool3", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 2}, new int[] {2, 2}, new int[] {0, 0})
-//                        .build(), "cnn3")
-                .addLayer("ffn1", new DenseLayer.Builder().nOut(3072)
-                        .dropOut(0.5).build(), "cnn3")
-//                .addLayer("ffn1", new DenseLayer.Builder().nOut(2048)
-//                        .dropOut(0.5).build(), "ffn0")
+                        .nOut(256).activation(Activation.RELU).build(), "maxpool2")
+                .addLayer("maxpool3", new SubsamplingLayer.Builder(PoolingType.MAX, new int[] {2, 2}, new int[] {2, 2}, new int[] {0, 0})
+                        .build(), "cnn3")
+                .addLayer("ffn0", new DenseLayer.Builder().nOut(1024)
+                        .dropOut(0.5).build(), "maxpool3")
+                .addLayer("ffn1", new DenseLayer.Builder().nOut(512)
+                        .dropOut(0.5).build(), "ffn0")
                 .addLayer("out1", new OutputLayer.Builder(LossFunctions.LossFunction.RECONSTRUCTION_CROSSENTROPY)
                         .nOut(numLabels).activation(Activation.SOFTMAX).build(), "ffn1")
                 .build();
@@ -419,4 +337,5 @@ public class EmotionClassifier {
         }
         return counters;
     }
+
 }
