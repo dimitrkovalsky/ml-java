@@ -30,10 +30,10 @@ public class FacialKeyPrinter {
 
     public static void main(String[] args) throws Exception {
 
-        MultiLayerNetwork graph = KerasModelImport.importKerasSequentialModelAndWeights("C:\\gitlab\\ml\\ml-java\\models\\model.h5");
+        MultiLayerNetwork graph = KerasModelImport.importKerasSequentialModelAndWeights("C:\\gitlab\\ml\\ml-java\\models\\model49.h5");
         System.out.println(graph.summary());
         String imagePath = "C:\\gitlab\\ml\\ml-java\\datasets\\face2.jpeg";
-        INDArray matrix = new NativeImageLoader(height, width, 3).asMatrix(new File(imagePath));
+        INDArray matrix = new NativeImageLoader(height, width, 1).asMatrix(new File(imagePath));
         INDArray dup = matrix.dup();
         normalizeImage(matrix);
         System.out.println(matrix);
